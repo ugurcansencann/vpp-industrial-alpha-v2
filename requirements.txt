@@ -1,0 +1,23 @@
+# Web Framework ve Sunucu
+fastapi
+uvicorn
+python-multipart
+
+# Veri İşleme ve Makine Öğrenmesi
+pandas
+numpy
+scikit-learn
+joblib
+
+# Optimizasyon Motoru
+pulp
+
+# Veritabanı (PostgreSQL) ve ORM
+sqlalchemy
+psycopg2-binary
+
+# Performans ve Hız (Redis)
+redis
+
+# Zamanlanmış Görevler (Airflow uyumluluğu için gerekebilir)
+apache-airflow-client
