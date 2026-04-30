@@ -1,42 +1,71 @@
 version: '3.8'
+
 services:
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
-  # Bizim FastAPI Uygulamamız
+
+  # FastAPI Uygulaması
   web:
     build: .
     ports:
       - "8000:8000"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/vpp_db
+      - EPIAS_API_KEY=senin_api_anahtarin_buraya
+    volumes:
+      - .:/app 
     command: uvicorn main:app --host 0.0.0.0 --port 8000
 
-  # Veritabanımız (PostgreSQL)
+  # Veritabanı (PostgreSQL)
   db:
     image: postgres:15
     environment:
       - POSTGRES_USER=user
       - POSTGRES_PASSWORD=password
       - POSTGRES_DB=vpp_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d vpp_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+
+  # Airflow
   airflow:
     image: apache/airflow:2.7.1-python3.9
+    user: "${AIRFLOW_UID:-1000}:0"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://user:password@db:5432/vpp_db
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__FERNET_KEY=87I_S686fX_H0OqD6pC1S6_6TqfW7K3T5_9vX8_vR88=
+      - AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT=300 # Gunicorn zaman aşımını önler
+      - AIRFLOW__WEBSERVER__RATELIMIT_STORAGE_URI=redis://redis:6379/0 # Loglardaki rate-limit uyarısını keser
+      - EPIAS_API_KEY=senin_api_anahtarin_buraya
+      - PYTHONPATH=/app
     volumes:
       - ./dags:/opt/airflow/dags
       - .:/app
-    command: bash -c "airflow db init && airflow standalone"
     ports:
       - "8080:8080"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    # Komut sırası: Önce kütüphaneler, sonra DB init, sonra kullanıcı, sonra başlatma.
+    command: >
+      bash -c "pip install joblib scikit-learn pandas sqlalchemy psycopg2-binary requests &&
+      airflow db init && 
+      airflow webserver --port 8080 & airflow scheduler"
+
+volumes:
+  postgres_data:

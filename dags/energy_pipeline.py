@@ -1,13 +1,28 @@
+import sys
+import os
+sys.path.append('/app')
+
+# Şimdi import yapabilirsiniz
+from database import SessionLocal
+
+from database import SessionLocal
+import os, random, sys, requests, crud
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
-import sys
-import random
+
 
 # Proje yolları
 sys.path.append('/app') 
-from database import SessionLocal
-from crud import create_meter_reading
+
+# API Ayarları
+EPIAS_API_KEY = os.getenv("EPIAS_API_KEY", "YOUR_API_KEY_HERE")
+BASE_URL = "https://seffaflik.epias.com.tr/api/v1"
+# HEADERS eksikti, eklendi
+HEADERS = {
+    "X-API-KEY": EPIAS_API_KEY,
+    "Content-Type": "application/json"
+}
 
 default_args = {
     'owner': 'vpp_architect',
@@ -16,68 +31,89 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# --- GÖREV 1: Fiyat Verisi (PTF) ---
-def fetch_ptf_price(**kwargs):
-    current_hour = datetime.now().hour
-    if 17 <= current_hour <= 22:
-        price = random.uniform(2500.0, 3000.0)
-    elif 0 <= current_hour <= 6:
-        price = random.uniform(1000.0, 1500.0)
-    else:
-        price = random.uniform(1800.0, 2200.0)
-    
-    # Veriyi XCom'a gönderir
-    return round(price, 2)
+def get_epias_data(endpoint, params):
+    try:
+        response = requests.get(f"{BASE_URL}/{endpoint}", headers=HEADERS, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"EPİAŞ API Hatası ({endpoint}): {e}")
+        return None
 
-# --- GÖREV 2: IoT Sensör Verisi (Lokal OSB) ---
+# --- GÖREV 1: PTF Çekimi ---
+def fetch_real_ptf(**kwargs):
+    today = datetime.now().strftime("%Y-%m-%d")
+    params = {"startDate": today, "endDate": today}
+    data = get_epias_data("markets/mcp", params)
+    if data and 'items' in data:
+        current_hour = datetime.now().hour
+        return data['items'][current_hour]['price']
+    return round(random.uniform(2000, 2500), 2) # API hatasında simülasyona düşer
+
+# --- GÖREV 2: SMF Çekimi ---
+def fetch_real_smf(**kwargs):
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    params = {"startDate": date_str, "endDate": date_str}
+    data = get_epias_data("markets/smp", params)
+    if data and 'items' in data:
+        return data['items'][-1]['smp']
+    return round(random.uniform(1800, 2800), 2)
+
+# --- GÖREV 3: YAL/YAT Talimatları (Yeni eklendi) ---
+def fetch_real_instructions(**kwargs):
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    params = {"startDate": date_str, "endDate": date_str}
+    data = get_epias_data("markets/uamyat-yal", params)
+    if data and 'items' in data:
+        last = data['items'][-1]
+        return {
+            "yal": last.get('yalAmount', 0),
+            "yat": last.get('yatAmount', 0)
+        }
+    return {"yal": 0, "yat": 0}
+
+# --- GÖREV 4: IoT Tüketimi ---
 def fetch_iot_consumption(**kwargs):
     current_hour = datetime.now().hour
-    # Aydın OSB Aydınlatma Grubu Simülasyonu
     base_load = 120.0 if (current_hour >= 19 or current_hour <= 6) else 10.0
-    consumption = base_load + random.uniform(-2.0, 2.0)
-    
-    return round(consumption, 2)
+    return round(base_load + random.uniform(-2.0, 2.0), 2)
 
-# --- GÖREV 3: Verileri Birleştir ve DB'ye Kaydet ---
+# --- GÖREV 5: Birleştir ve Kaydet ---
 def merge_and_store(ti, **kwargs):
-    # XCom üzerinden diğer görevlerin çıktılarını çek
-    price = ti.xcom_pull(task_ids='get_ptf_price')
+    ptf = ti.xcom_pull(task_ids='get_ptf_price')
+    smf = ti.xcom_pull(task_ids='get_smf_price')
+    inst = ti.xcom_pull(task_ids='get_instructions')
     consumption = ti.xcom_pull(task_ids='get_iot_load')
     
     db = SessionLocal()
     try:
-        create_meter_reading(
+        # CRUD fonksiyonuna SMF, YAL, YAT parametrelerini eklediğimizi varsayıyoruz
+        crud.create_meter_reading(
             db=db,
             timestamp=datetime.now(),
             meter_id="AYDIN_OSB_LIGHT_01",
             consumption=consumption,
-            price=price
+            price=ptf,
+            smf=smf,
+            yal=inst['yal'],
+            yat=inst['yat']
         )
-        print(f"BAŞARI: PTF({price}) ve IoT({consumption}) verileri birleştirildi.")
+        print(f"VERİ SETİ TAMAMLANDI: PTF:{ptf} | SMF:{smf} | YAL:{inst['yal']}")
     finally:
         db.close()
 
-# --- DAG TANIMI ---
 with DAG('vpp_osb_modular_pipeline_v36', 
-         default_args=default_args, 
-         # Her dakika çalışması için (Minute, Hour, Day, Month, Weekday)
+         default_args=default_args,
          schedule_interval=timedelta(minutes=1), 
          catchup=False) as dag:
 
-    t1 = PythonOperator(
-        task_id='get_ptf_price',
-        python_callable=fetch_ptf_price
-    )
+    t1 = PythonOperator(task_id='get_ptf_price', python_callable=fetch_real_ptf)
+    t2 = PythonOperator(task_id='get_smf_price', python_callable=fetch_real_smf)
+    t3 = PythonOperator(task_id='get_instructions', python_callable=fetch_real_instructions)
+    t4 = PythonOperator(task_id='get_iot_load', python_callable=fetch_iot_consumption)
+    t5 = PythonOperator(task_id='save_to_postgresql', python_callable=merge_and_store)
 
-    t2 = PythonOperator(
-        task_id='get_iot_load',
-        python_callable=fetch_iot_consumption
-    )
-
-    t3 = PythonOperator(
-        task_id='save_to_postgresql',
-        python_callable=merge_and_store
-    )
-
-    # Akış Şeması: Fiyat ve Yük aynı anda çekilir, bitince DB'ye kaydedilir.
-    [t1, t2] >> t3
+    # 4 paralel koldan veri çekilir, t5'te birleşir
+    [t1, t2, t3, t4] >> t5

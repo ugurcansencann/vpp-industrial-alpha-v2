@@ -1,142 +1,151 @@
-from fastapi import FastAPI
-import joblib
-import pandas as pd
+from fastapi import FastAPI, Depends, HTTPException
+import pandas as pd, joblib, redis, json, subprocess, os
 from pulp import LpProblem, LpMinimize, LpVariable, lpSum, value
-from fastapi.responses import HTMLResponse # En üste ekle
-from database import engine, Base, SessionLocal, MeterData, init_db
-import redis
-import json
+from fastapi.responses import HTMLResponse
+# Veritabanı bileşenleri
+from sqlalchemy.orm import Session
+from database import engine, Base, SessionLocal, MeterData  # MeterData yerine projedeki model ismini (MeterReading gibi) kontrol et
+import crud 
 from kpi_engine import calculate_vpp_performance
-import subprocess # Terminal komutu çalıştırmak için
 
-def init_db():
-    Base.metadata.create_all(bind=engine)
+# --- VERİTABANI BAĞLANTI YÖNETİCİSİ ---
+# Bu fonksiyon Depends(get_db) için gereklidir
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-init_db()
-app = FastAPI(title="Wattica VPP-Optima API")
+# Tabloları oluştur (Eğer tablolar silindiyse otomatik oluşturur)
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Wattica VPP-Industrial-Alpha API")
 
 # Redis bağlantısı
 cache = redis.Redis(host='redis', port=6379, db=0)
 
-@app.post("/retrain")
-def retrain_model():
-    try:
-        # train_model.py dosyasını sistem içinde çalıştırır
-        result = subprocess.run(["python", "train_model.py"], capture_output=True, text=True)
-        # Yeni eğitilen modeli tekrar yükle
-        global model
-        model = joblib.load("consumption_model.pkl")
-        # Redis'i temizle (Eski tahminler silinsin)
-        cache.flushdb() 
-        return {"status": "success", "message": "Model başarıyla yeniden eğitildi ve güncellendi!"}
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
-
-@app.get("/db-test")
-def test_db():
-    try:
-        with engine.connect() as connection:
-            return {"status": "success", "message": "PostgreSQL bağlantısı sapasağlam!"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/history")
-def get_history():
-    db = SessionLocal()
-    try:
-        # DB'deki son 10 kaydı getir
-        data = db.query(MeterData).order_by(MeterData.timestamp.desc()).limit(10).all()
-        return data
-    finally:
-        db.close()
-
-# En alta, uvicorn.run'dan hemen önce ekle:
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard():
-    with open("templates/index.html", "r", encoding="utf-8") as f:
-        return f.read()
-    
-# 1. Modeli Yükle
-model = joblib.load("consumption_model.pkl")
+# Modeli yükle (Dosya yoksa hata vermemesi için kontrol eklenebilir)
+try:
+    model = joblib.load("consumption_model.pkl")
+except:
+    model = None
+    print("UYARI: consumption_model.pkl bulunamadı. Lütfen /retrain endpoint'ini kullanın.")
 
 @app.get("/")
 def home():
-    return {"message": "VPP-Optima Akıllı Enerji Yönetim Sistemine Hoş Geldiniz!"}
+    return {"message": "VPP-Industrial-Alpha Akıllı Enerji Yönetim Sistemine Hoş Geldiniz!"}
 
+# --- 1. MODEL YENİDEN EĞİTİM (MLOps) ---
+@app.post("/retrain")
+def retrain_model():
+    try:
+        # train_model.py dosyasını çalıştırır
+        result = subprocess.run(["python", "train_model.py"], capture_output=True, text=True)
+        if result.returncode != 0:
+            return {"status": "error", "message": result.stderr}
+            
+        global model
+        model = joblib.load("consumption_model.pkl")
+        cache.flushdb() 
+        return {"status": "success", "message": "Model yeni piyasa verileriyle (SMF/PTF) eğitildi!"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.get("/model-stats")
+def get_model_stats():
+    try:
+        with open("model_metrics.json", "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"mae": "N/A", "r2_score": "N/A", "message": "Model henüz eğitilmedi."}
+
+# --- 2. DİNAMİK OPTİMİZASYON (Piyasa Odaklı) ---
 @app.get("/optimize")
-def get_optimization(hour: int, day_of_week: int, current_price: float):
-    cache_key = f"pred_{hour}_{day_of_week}"
+def get_optimization(hour: int, day_of_week: int, current_price: float, smf: float = None):
+    # Eğer SMF verilmemişse PTF'e eşit varsayalım
+    actual_cost = smf if smf else current_price
+    
+    cache_key = f"opt_{hour}_{day_of_week}_{actual_cost}"
     cached_data = cache.get(cache_key)
-
     if cached_data:
-        print("Veri Redis'ten (Cache) getirildi!")
         return json.loads(cached_data)
 
-    # --- BÖLÜM 1: TAHMİN ---
+    if not model:
+        return {"error": "Model henüz eğitilmedi."}
+
+    # Tahmin
     input_data = pd.DataFrame([[hour, day_of_week]], columns=['hour', 'day_of_week'])
     predicted_load = model.predict(input_data)[0]
     
-    # --- BÖLÜM 2: OPTİMİZASYON (PuLP) ---
-    # Senaryo: Fiyat yüksekse tüketimi %20 kısabiliriz (Esneklik kapasitesi)
-    # Hedef: Maliyeti minimize etmek
+    # Optimizasyon (Esneklik Kapasitesi %20)
+    # Eğer SMF > PTF ise sistem daha agresif yük kısar
+    flexibility_limit = 0.70 if (smf and smf > current_price) else 0.80
     
     prob = LpProblem("Maliyet_Minimizasyonu", LpMinimize)
-    
-    # Değişken: Gerçekleşecek Tüketim (Tahmin edilenin %80'i ile %100'ü arasında değişebilir)
-    # Yani cihazları biraz kısma esnekliğimiz var.
-    consumption_var = LpVariable("Gercek_Tuketim", lowBound=predicted_load * 0.8, upBound=predicted_load)
-    
-    # Amaç Fonksiyonu: Tüketim * Mevcut Fiyat
-    prob += consumption_var * current_price
-    
-    # Çöz
+    consumption_var = LpVariable("Gercek_Tuketim", lowBound=predicted_load * flexibility_limit, upBound=predicted_load)
+    prob += consumption_var * actual_cost
     prob.solve()
     
     optimized_load = value(consumption_var)
-    savings = (predicted_load - optimized_load) * current_price
+    savings = (predicted_load - optimized_load) * actual_cost
     
     result = {
-        "status": "Success",
-        "analysis": {
-            "predicted_base_load": round(predicted_load, 2),
-            "optimized_load": round(optimized_load, 2),
-            "flexibility_used": "20%" if optimized_load < predicted_load else "0%",
-            "potential_savings_tl": round(savings, 2)
-        },
-        "market_info": {
-            "current_price": current_price,
-            "hour": hour
-        }
+        "predicted_base_load": round(predicted_load, 2),
+        "optimized_load": round(optimized_load, 2),
+        "potential_savings_tl": round(savings, 2),
+        "market_status": "HIGH_COST" if (smf and smf > current_price) else "NORMAL"
     }
-    # Sonucu Redis'e kaydet (1 saat boyunca sakla)
+    
     cache.setex(cache_key, 3600, json.dumps(result))
-    return result 
+    return result
 
+# --- 3. KPI VE PERFORMANS TAKİBİ ---
 @app.get("/vpp-performance/{meter_id}")
 def get_vpp_metrics(meter_id: str, db: Session = Depends(get_db)):
-    # 1. DB'den son okumayı getir
-    reading = crud.get_last_reading(db, meter_id) # CRUD'da bu fonksiyonun olduğunu varsayıyoruz
+    # Burada tek bir cihazın son verisi gerektiği için 
+    # crud içindeki fonksiyonunun doğru çalıştığından emin ol
+    reading = crud.get_readings(db, meter_id=meter_id)
     
     if not reading:
-        return {"error": "Veri bulunamadı"}
+        raise HTTPException(status_code=404, detail="Cihaz verisi bulunamadı")
 
-    # 2. KPI motorunu çalıştır
+    # KPI motorunu çalıştır (Yeni SMF verisiyle)
     metrics = calculate_vpp_performance(
         actual_consumption=reading.consumption,
-        actual_price=reading.price
+        actual_price=reading.price,
+        smf=getattr(reading, 'smf', reading.price) # SMF yoksa PTF kullan
     )
     
-    # 3. Sonuçları birleştirip döndür
     return {
         "meter_id": meter_id,
         "timestamp": reading.timestamp,
         "current_values": {
             "consumption": reading.consumption,
-            "price": reading.price
+            "ptf": reading.price,
+            "smf": getattr(reading, 'smf', None)
         },
         "kpi_metrics": metrics
     }
 
+# --- 4. GEÇMİŞ VERİ VE DASHBOARD ---
+@app.get("/history")
+def get_history(db: Session = Depends(get_db)):
+    # CRUD metodu içindeki limit parametresini 24 olarak kullanıyoruz
+    history = crud.get_readings(db, limit=24)
+    
+    # Dashboard grafiği soldan sağa (eskiden yeniye) aksın diye 
+    # listeyi ters çevirip (Pythonic slice ile) gönderiyoruz.
+    return history[::-1]
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    try:
+        with open("templates/index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<h1>Dashboard dosyası (templates/index.html) bulunamadı!</h1>"
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

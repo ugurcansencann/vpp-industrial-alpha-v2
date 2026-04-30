@@ -1,20 +1,36 @@
 from sqlalchemy.orm import Session
-from database import SessionLocal, MeterData
-from datetime import datetime
+from datetime import datetime, timedelta
+import models 
 
-# Veritabanına yeni bir ölçüm verisi kaydetme fonksiyonu
-def create_meter_reading(db: Session, timestamp: datetime, meter_id: str, consumption: float, price: float):
-    db_item = MeterData(
+def get_readings(db: Session, limit: int = None, days: int = None):
+    """Genel veri çekme fonksiyonu (Dashboard ve Analiz için)"""
+    query = db.query(models.MeterReading).order_by(models.MeterReading.timestamp.desc())
+    
+    if days:
+        start_date = datetime.now() - timedelta(days=days)
+        query = query.filter(models.MeterReading.timestamp >= start_date)
+    
+    if limit:
+        query = query.limit(limit)
+    
+    return query.all()
+
+def create_meter_reading(db: Session, timestamp, meter_id, consumption, price, smf=None, yal=None, yat=None):
+    """Yeni IoT veya Piyasa verisi kaydetme fonksiyonu"""
+    db_reading = models.MeterReading(
         timestamp=timestamp,
         meter_id=meter_id,
         consumption=consumption,
-        price=price
+        price=price,
+        smf=smf,
+        yal=yal,
+        yat=yat
     )
-    db.add(db_item)
+    db.add(db_reading)
     db.commit()
-    db.refresh(db_item)
-    return db_item
+    db.refresh(db_reading)
+    return db_reading
 
-# Veritabanından son verileri çekme (Örn: Dashboard için)
 def get_recent_readings(db: Session, limit: int = 10):
-    return db.query(MeterData).order_by(MeterData.timestamp.desc()).limit(limit).all()
+    """Dashboard'daki tablo için en güncel verileri getirir"""
+    return db.query(models.MeterReading).order_by(models.MeterReading.timestamp.desc()).limit(limit).all()

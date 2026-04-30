@@ -1,45 +1,85 @@
 import pandas as pd
-from sqlalchemy import create_all, create_engine
-from sklearn.ensemble import RandomForestRegressor
 import joblib
 import os
+import json
+import requests
+from sqlalchemy import create_engine
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import train_test_split
 
-# Veritabanı Bağlantı Bilgisi (Docker ortamına uygun)
 DB_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/vpp_db")
+WEB_SERVICE_RELOAD_URL = "http://web:8000/reload-model"
 
-def train_baseline_model():
-    # 1. Veriyi Veritabanından Çek (Artık CSV yok!)
+def run_ml_pipeline(mode="retrain", limit=100):
+    """
+    mode: "baseline" (tüm veri) veya "retrain" (son n veri)
+    limit: retrain modunda kaç satır alınacağı
+    """
     engine = create_engine(DB_URL)
-    query = "SELECT timestamp, consumption, price FROM meter_readings"
+    
+    if mode == "baseline":
+        query = "SELECT * FROM meter_readings ORDER BY timestamp DESC"
+    else:
+        query = f"SELECT * FROM meter_readings ORDER BY timestamp DESC LIMIT {limit}"
     
     try:
         df = pd.read_sql(query, engine)
-        if len(df) < 10:
-            print("Eğitim için yeterli veri yok (En az 10 satır lazım).")
-            return
+        if len(df) < 20: # Split yapabilmek için minimum eşik
+            return f"Yetersiz veri (Mevcut: {len(df)})"
     except Exception as e:
-        print(f"Hata: Veritabanına bağlanılamadı. {e}")
-        return
+        return f"Hata: {str(e)}"
 
+    # Feature Engineering (Merkezi hale getirildi)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
-    
-    # 2. Gelişmiş Özellik Mühendisliği (Feature Engineering)
     df['hour'] = df['timestamp'].dt.hour
     df['day_of_week'] = df['timestamp'].dt.dayofweek
-    # Fiyatı da modele girdi olarak veriyoruz çünkü fiyat tüketime etki eder!
+    df['smf'] = df['smf'].fillna(df['price'])
+    df['price_spread'] = (df['smf'] - df['price']) / 1000
+    df['system_direction'] = df['yal'].fillna(0) - df['yat'].fillna(0)
     df['price_norm'] = df['price'] / 1000 
     
-    # X: Saat, Gün, Fiyat | y: Tüketim
-    X = df[['hour', 'day_of_week', 'price_norm']]
+    features = ['hour', 'day_of_week', 'price_norm', 'price_spread', 'system_direction']
+    X = df[features]
     y = df['consumption']
-    
-    # 3. Modeli Eğit
+
+    # --- DATA SPLIT & EVALUATION ---
+    # Veriyi %80 Eğitim, %20 Test olarak ayırıyoruz
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
     model = RandomForestRegressor(n_estimators=100, random_state=42)
-    model.fit(X, y) # Test split'i canlı eğitimde (MLOps) genelde tüm veriyle yaparız
+    model.fit(X_train, y_train)
     
-    # 4. Modeli Kaydet
+    # Metrik Hesaplama (R2 ve MAE)
+    preds = model.predict(X_test)
+    mae = mean_absolute_error(y_test, preds)
+    r2 = r2_score(y_test, preds)
+
+    # Final Modeli Tüm Veriyle Eğit (Production Readiness)
+    model.fit(X, y)
+    
+    # Kayıt İşlemleri
     joblib.dump(model, "consumption_model.pkl")
-    print(f"Model {len(df)} satır veri ile güncellendi ve kaydedildi!")
+    
+    metrics = {
+        "mae": round(mae, 3),
+        "r2_score": round(r2, 3),
+        "mode": mode,
+        "sample_size": len(df),
+        "last_train_date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+    }
+    
+    with open("model_metrics.json", "w") as f:
+        json.dump(metrics, f)
+
+    # Web Servis Tetikleme
+    try:
+        requests.post(WEB_SERVICE_RELOAD_URL, timeout=5)
+    except:
+        pass
+
+    return f"Pipeline ({mode}) tamamlandı. R2: {round(r2, 3)}, MAE: {round(mae, 3)}"
 
 if __name__ == "__main__":
-    train_baseline_model()
+    # Manuel çalıştırmada varsayılan olarak baseline başlasın
+    print(run_ml_pipeline(mode="baseline"))

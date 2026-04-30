@@ -1,155 +1,354 @@
 <!DOCTYPE html>
-<html>
+<html lang="tr">
 <head>
-    <title>VPP-Industrial-Alpha</title>
+    <meta charset="UTF-8">
+    <title>VPP Industrial Alpha | Control Center</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        .data-card { border-left: 5px solid #0dcaf0; transition: 0.3s; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
-        .data-card:hover { transform: scale(1.02); }
-        .kpi-value { font-size: 1.8rem; font-weight: bold; color: #ffc107; }
-        .table-font { font-size: 0.85rem; }
+        :root {
+            --bg-deep: #0f172a;
+            --card-bg: #1e293b;
+            --accent-cyan: #22d3ee;
+            --accent-amber: #fbbf24;
+            --accent-rose: #f43f5e;
+            --text-main: #f1f5f9;
+            --text-dim: #94a3b8;
+            --table-hover: rgba(34, 211, 238, 0.1);
+        }
+
+        body { 
+            background-color: var(--bg-deep); 
+            color: var(--text-main); 
+            font-family: 'Inter', sans-serif;
+            letter-spacing: -0.01em;
+        }
+
+        .vpp-card {
+            background: var(--card-bg);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 1.5rem;
+            height: 100%;
+            transition: all 0.3s ease;
+        }
+
+        .vpp-card:hover { border-color: var(--accent-cyan); }
+
+        /* Plan A & B İçin Kart Stillendirmesi */
+        .plan-card-a { border-left: 4px solid var(--accent-cyan); }
+        .plan-card-b { border-left: 4px solid var(--accent-amber); }
+
+        .stat-label { color: var(--text-dim); font-size: 0.8rem; text-transform: uppercase; font-weight: 600; }
+        .stat-value { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem; }
+        
+        .status-indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .bg-open { background-color: var(--accent-rose); box-shadow: 0 0 10px var(--accent-rose); }
+        .bg-surplus { background-color: #10b981; box-shadow: 0 0 10px #10b981; }
+
+        /* Gelişmiş Tablo Tasarımı */
+        .table-vpp { 
+            color: var(--text-main) !important; 
+            font-size: 0.85rem; 
+            border-collapse: separate; 
+            border-spacing: 0; 
+            background-color: transparent !important; /* Beyazlığı tamamen kırar */
+            text-align: center; /* Tüm tablo içeriğini yatayda ortalar */
+        }
+
+        .table-vpp thead th { 
+            background: rgba(0,0,0,0.4) !important; /* Başlık kısmını biraz daha derinleştirir */
+            color: var(--text-dim) !important; 
+            border: none !important; 
+            padding: 15px 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            vertical-align: middle !important; /* Başlıkları dikeyde ortalar */
+        }
+
+        .table-vpp tbody tr { 
+            transition: all 0.2s ease; 
+            background-color: transparent !important; 
+        }
+
+        /* Satır hücreleri ve çizgiler */
+        .table-vpp td { 
+            padding: 14px 10px; 
+            background-color: transparent !important;
+            color: var(--text-main) !important;
+            border-bottom: 1px solid rgba(255,255,255,0.05) !important; /* İnce gri satır çizgisi */
+            vertical-align: middle !important; /* Hücre içeriğini dikeyde ortalar */
+        }
+
+        /* Satır Hover ve Highlight - Turkuaz efekt */
+        .table-vpp tbody tr:hover td { 
+            background-color: var(--table-hover) !important; 
+            color: var(--accent-cyan) !important;
+            cursor: pointer;
+        }
+
+        .btn-vpp-outline { border: 1px solid var(--text-dim); color: var(--text-dim); font-size: 0.8rem; }
+        .btn-vpp-outline:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        
+        /* Grafik alanı için minimum yükseklik */
+        #marketChart { 
+            min-height: 400px; /* Grafiğin boyutuyla aynı olmalı */
+        }
+
+        /* Tablo alanı için sabit yükseklik ve içten kaydırma */
+        .table-responsive {
+            min-height: 500px; /* 24 satır için yaklaşık yükseklik */
+            max-height: 600px;
+            overflow-y: auto;
+        }
     </style>
 </head>
-<body class="bg-dark text-light">
-    <div class="container mt-5">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2 class="text-info">⚡ VPP-Industrial-Alpha <span class="badge bg-primary" style="font-size: 0.5em;">V3.6</span></h2>
-            <div id="connection-status" class="badge bg-success">Canlı Veri Aktif</div>
+<body>
+    <div class="container py-5">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-center mb-5">
+            <div>
+                <h3 class="fw-bold mb-0">⚡ VPP Industrial <span class="text-cyan" style="color: var(--accent-cyan)">Alpha</span></h3>
+                <p class="text-dim mb-0" style="font-size: 0.8rem;">Real-time Energy Arbitrage & Demand Response</p>
+            </div>
+            <div id="connection-status" class="px-3 py-1 rounded-pill bg-dark border border-success text-success" style="font-size: 0.7rem;">
+                ● LIVE MARKET FEED
+            </div>
         </div>
-        
+
         <div class="row g-4">
-            <!-- 1. KPI Kartı: Finansal Özet -->
-            <div class="col-md-4">
-                <div class="card bg-secondary text-white p-4 data-card h-100">
-                    <h4>💰 Tasarruf Motoru</h4>
-                    <div id="kpi-result" class="mt-3">
-                        <div class="mb-2">
-                            <small class="text-white-50">Anlık Tasarruf (TL)</small>
-                            <div id="savings-val" class="kpi-value">0.00 TL</div>
-                        </div>
-                        <div>
-                            <small class="text-white-50">Birim Maliyet (TL/kWh)</small>
-                            <div id="unit-price" class="text-warning fw-bold">0.00</div>
-                        </div>
+            <!-- Plan A: Yarın Projeksiyonu -->
+            <div class="col-md-3">
+                <div class="vpp-card plan-card-a">
+                    <div class="stat-label">Plan A: Yarın (Stratejik)</div>
+                    <div class="stat-value text-white" id="plan-a-ptf">-- <span style="font-size: 0.8rem">TL</span></div>
+                    <div class="small text-dim mt-2">14:00+ Beklenen PTF Ort.</div>
+                </div>
+            </div>
+
+            <!-- Plan B: Bugün Gerçekleşen (Arbitraj) -->
+            <div class="col-md-3">
+                <div class="vpp-card plan-card-b">
+                    <div class="stat-label">Plan B: Bugün (Operasyonel)</div>
+                    <div id="savings-val" class="stat-value text-white">0.00 <span style="font-size: 0.8rem">TL</span></div>
+                    <div class="d-flex justify-content-between border-top border-secondary pt-2 mt-2">
+                        <span class="text-dim small">Anlık Kar/Zarar</span>
+                        <span id="market-direction-short" class="text-white small fw-bold">TAKİPTE</span>
                     </div>
                 </div>
             </div>
 
-            <!-- 2. Optimizasyon Kartı -->
-            <div class="col-md-4">
-                <div class="card bg-secondary text-white p-4 data-card h-100" style="border-left-color: #ffc107;">
-                    <h4>🎯 ML Optimizasyon</h4>
-                    <div id="opt-result">
-                        <p class="text-muted">Analiz ediliyor...</p>
-                    </div>
-                    <div class="mt-auto">
-                        <button class="btn btn-warning btn-sm w-100 mb-2" onclick="retrainModel()">🤖 Yeniden Eğit (MLOps)</button>
+            <!-- Sistem Durumu -->
+            <div class="col-md-3">
+                <div class="vpp-card">
+                    <div class="stat-label">Sistem Piyasa Yönü</div>
+                    <div id="market-direction" class="stat-value text-white" style="font-size: 1.2rem; margin-top: 0.5rem;">YÜKLENİYOR...</div>
+                    <div class="mt-2 pt-2 border-top border-secondary">
+                        <span id="yal-yat-status" class="small text-dim">PTF: 0 | SMF: 0</span>
                     </div>
                 </div>
             </div>
 
-            <!-- 3. Kontrol Kartı -->
-            <div class="col-md-4">
-                <div class="card bg-secondary text-white p-4 h-100">
-                    <h4>⚙️ Sistem Kontrol</h4>
-                    <p><small>Lokal OSB Konfigürasyonu: <strong>Aydın/Mavişehir</strong></small></p>
-                    <button class="btn btn-outline-info w-100 mb-2" onclick="window.location.href='http://localhost:8080'">🛠️ Airflow Dashboard</button>
-                    <button class="btn btn-outline-light w-100" onclick="fetchHistory()">🔄 Manuel Yenile</button>
+            <!-- ML Karar -->
+            <div class="col-md-3">
+                <div class="vpp-card">
+                    <div class="stat-label">Optimizasyon Hedefi</div>
+                    <div id="opt-result" class="stat-value" style="color: var(--accent-amber);">0.00 kWh</div>
+                    <div class="small text-dim">Yük Kaydırma Önerisi</div>
                 </div>
             </div>
 
-            <!-- Alt Bölüm: Canlı Veri Tablosu -->
+            <!-- Grafik Bölümü -->
+            <div class="col-md-9">
+                <div class="vpp-card">
+                    <div class="stat-label mb-3">Fiyat Trend Analizi (PTF vs SMF)</div>
+                    <canvas id="marketChart" style="max-height: 400px;"></canvas>
+                </div>
+            </div>
+
+            <!-- Hızlı Aksiyonlar -->
+            <div class="col-md-3">
+                <div class="vpp-card d-flex flex-column gap-3">
+                    <div class="stat-label">Kontrol Paneli</div>
+                    <button class="btn btn-vpp-outline w-100 py-3" onclick="window.location.href='http://localhost:8080'">
+                        <img src="https://airflow.apache.org/images/feature-image.png" width="20" class="me-2"> AIRFLOW
+                    </button>
+                    <button class="btn btn-vpp-outline w-100 py-3" onclick="fetchHistory()">MANUAL REFRESH</button>
+                    <div class="mt-auto pt-3 border-top border-secondary">
+                        <div class="small text-dim mb-1">Hata Payı (MAE): <b id="metric-mae" class="text-white">...</b></div>
+                        <div class="small text-dim mb-2">Model Score (R²): <b id="metric-r2" class="text-white">...</b></div>
+                        <button class="btn btn-sm btn-dark w-100 text-dim" onclick="retrainModel()">Trigger ML Retrain</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Veritabanı Tablosu -->
             <div class="col-md-12">
-                <div class="card bg-secondary text-white p-4">
-                    <h4>📊 Veritabanı Akışı (IoT + EPİAŞ)</h4>
-                    <table class="table table-dark table-striped mt-3 table-font">
-                        <thead>
-                            <tr>
-                                <th>Zaman</th>
-                                <th>Varlık ID</th>
-                                <th>Tüketim (kWh)</th>
-                                <th>Piyasa Fiyatı (TL/MWh)</th>
-                                <th>Durum</th>
-                            </tr>
-                        </thead>
-                        <tbody id="history-table"></tbody>
-                    </table>
+                <div class="vpp-card">
+                    <div class="stat-label mb-3">IoT + Piyasa Arbitraj Günlüğü (Son 24 Kayıt)</div>
+                    <div class="table-responsive">
+                        <table class="table table-vpp">
+                            <thead>
+                                <tr>
+                                    <th>SAAT</th>
+                                    <th>YÜK (kWh)</th>
+                                    <th>PTF (₺)</th>
+                                    <th>SMF (₺)</th>
+                                    <th>DURUM</th>
+                                    <th>YAL/YAT (MW)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-table"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        // --- Adım 14 & 15 Entegrasyonu ---
+        let myChart;
 
         function fetchHistory() {
             fetch('/history')
                 .then(res => res.json())
                 .then(data => {
                     let rows = '';
+                    const labels = [];
+                    const ptfData = [];
+                    const smfData = [];
+
+                    // Backend'den veri [::-1] (eskiden yeniye) geldiği için tabloyu doldururken 
+                    // en yeniyi en üstte göstermek için listeyi ters döneceğiz.
+                    const displayData = [...data].reverse();
+
                     data.forEach(item => {
+                        const time = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                        labels.push(time);
+                        ptfData.push(item.price);
+                        smfData.push(item.smf || item.price);
+                    });
+
+                    displayData.forEach(item => {
+                        const time = new Date(item.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                        const diff = (item.smf - item.price).toFixed(1);
+                        const statusColor = item.smf > item.price ? 'var(--accent-rose)' : '#10b981';
+                        const statusText = item.smf > item.price ? 'AÇIK' : 'FAZLA';
+
                         rows += `<tr>
-                            <td>${new Date(item.timestamp).toLocaleTimeString()}</td>
-                            <td><span class="badge bg-dark">${item.meter_id || 'AYDIN_OSB_01'}</span></td>
-                            <td class="text-info fw-bold">${item.consumption.toFixed(2)}</td>
-                            <td>${item.price.toFixed(2)} TL</td>
-                            <td><span class="dot bg-success"></span> İşlendi</td>
+                            <td class="text-dim fw-bold">${time}</td>
+                            <td style="color: var(--accent-cyan)">${item.consumption.toFixed(2)}</td>
+                            <td>${item.price.toFixed(0)}</td>
+                            <td style="color: ${statusColor}">${(item.smf || 0).toFixed(0)}</td>
+                            <td><span class="badge" style="background: ${statusColor}22; color: ${statusColor}">${statusText}</span></td>
+                            <td class="text-dim small">${(item.yal || 0).toFixed(0)} / ${(item.yat || 0).toFixed(0)}</td>
                         </tr>`;
                     });
+                    
                     document.getElementById('history-table').innerHTML = rows;
+                    updateChart(labels, ptfData, smfData);
                     
                     if(data.length > 0) {
-                        updateKPIs(data[0]); // Yeni eklenen KPI fonksiyonu
-                        runAutoOptimization(data[0]);
+                        const last = data[data.length - 1]; // En güncel veri listenin sonundadır
+                        updateMarketUI(last);
+                        runAutoOptimization(last);
                     }
-                })
-                .catch(err => {
-                    document.getElementById('connection-status').className = "badge bg-danger";
-                    document.getElementById('connection-status').innerText = "Bağlantı Kesildi";
                 });
         }
 
-        // Adım 14: Finansal KPI Motoru (Frontend Yansıması)
-        function updateKPIs(lastData) {
-            // Birim dönüşümü: TL/MWh -> TL/kWh
-            const unitPriceKWh = lastData.price / 1000;
+        function updateMarketUI(last) {
+            document.getElementById('yal-yat-status').innerText = `PTF: ${last.price.toFixed(0)} ₺ | SMF: ${(last.smf || 0).toFixed(0)} ₺`;
             
-            // Backend'deki KPI endpoint'inden verileri çekiyoruz (Alternatif olarak JS'de hesaplanabilir)
-            fetch(`/vpp-performance/${lastData.meter_id || 'AYDIN_OSB_LIGHT_01'}`)
-                .then(res => res.json())
-                .then(kpiData => {
-                    document.getElementById('savings-val').innerText = kpiData.kpi_metrics.savings + " TL";
-                    document.getElementById('unit-price').innerText = unitPriceKWh.toFixed(3) + " TL/kWh";
-                });
+            const directionDiv = document.getElementById('market-direction');
+            const directionShort = document.getElementById('market-direction-short');
+
+            if (last.smf > last.price) {
+                directionDiv.innerHTML = `<span class="status-indicator bg-open"></span>ENERJİ AÇIĞI`;
+                directionShort.innerText = "YÜK KISMA";
+                directionShort.className = "text-rose small fw-bold";
+            } else {
+                directionDiv.innerHTML = `<span class="status-indicator bg-surplus"></span>ENERJİ FAZLASI`;
+                directionShort.innerText = "YÜK ARTIRMA";
+                directionShort.className = "text-success small fw-bold";
+            }
+        }
+
+        function updateChart(labels, ptf, smf) {
+            const ctx = document.getElementById('marketChart').getContext('2d');
+            if (myChart) myChart.destroy();
+            myChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { 
+                            label: 'PTF (Referans)', 
+                            data: ptf, 
+                            borderColor: '#22d3ee', 
+                            backgroundColor: 'rgba(34, 211, 238, 0.05)', 
+                            fill: true, 
+                            tension: 0.1, // PTF saatlik olduğu için daha köşeli durması gerçekçi olur
+                            borderWidth: 3, 
+                            pointRadius: 2 
+                        },
+                        { 
+                            label: 'SMF (Anlık)', 
+                            data: smf, 
+                            borderColor: '#f43f5e', 
+                            borderDash: [5, 5], 
+                            tension: 0.4, 
+                            borderWidth: 2, 
+                            pointRadius: 0 
+                        }
+                    ]
+                },
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false,
+                    interaction: { intersect: false, mode: 'index' },
+                    plugins: { 
+                        legend: { position: 'top', labels: { color: '#94a3b8', font: { size: 11, weight: '600' } } } 
+                    },
+                    scales: {
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8', maxRotation: 0 } }
+                    }
+                }
+            });
         }
 
         function runAutoOptimization(lastData) {
             const hour = new Date(lastData.timestamp).getHours();
             const day = new Date(lastData.timestamp).getDay();
-            
-            fetch(`/optimize?hour=${hour}&day_of_week=${day}&current_price=${lastData.price}`)
+            fetch(`/optimize?hour=${hour}&day_of_week=${day}&current_price=${lastData.price}&smf=${lastData.smf}`)
                 .then(res => res.json())
                 .then(data => {
-                    const resDiv = document.getElementById('opt-result');
-                    resDiv.innerHTML = `
-                        <div class="mt-2">
-                            <h3 class="text-warning">${data.analysis.optimized_load} kWh</h3>
-                            <p class="mb-1"><small>Tahmin: ${data.analysis.predicted_base_load} kWh</small></p>
-                            <span class="badge bg-success">Esneklik: %${data.analysis.flexibility_used || 15}</span>
-                        </div>
-                    `;
+                    document.getElementById('opt-result').innerHTML = `${data.optimized_load.toFixed(2)} <span style="font-size: 0.8rem">kWh</span>`;
+                });
+        }
+
+        function fetchModelStats() {
+            fetch('/model-stats')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('metric-mae').innerText = data.mae.toFixed(2) + " kWh";
+                    document.getElementById('metric-r2').innerText = "%" + (data.r2_score * 100).toFixed(1);
                 });
         }
 
         function retrainModel() {
             fetch('/retrain', {method: 'POST'})
                 .then(res => res.json())
-                .then(data => alert("Model Güncellendi: " + data.message));
+                .then(data => {
+                    alert("Model eğitimi tetiklendi: " + data.message);
+                });
         }
 
-        // Başlangıç ve Periyodik Güncelleme
+        fetchModelStats();
         fetchHistory();
-        setInterval(fetchHistory, 10000); // 10 saniyede bir (Airflow saatlik çalışsa da arayüz canlı kalsın)
+        setInterval(fetchHistory, 30000); // 30 saniyede bir güncelleme yeterli
     </script>
 </body>
 </html>
