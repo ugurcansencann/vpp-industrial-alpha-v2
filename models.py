@@ -10,11 +10,12 @@ class MeterReading(Base):
 
     # index=True yerine sadece primary_key=True bırakmak genellikle yeterlidir 
     # çünkü primary key otomatik olarak benzersiz bir indeks oluşturur.
-    id = Column(Integer, primary_key=True) 
-    timestamp = Column(DateTime)
-    meter_id = Column(String)
-    consumption = Column(Float)
-    price = Column(Float) 
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, nullable=False)
+    # Bu iki kolonun Float olduğundan emin olun
+    consumption = Column(Float, nullable=False) 
+    price = Column(Float, nullable=False)
+    meter_id = Column(String, nullable=False)
     smf = Column(Float, nullable=True)
     yal = Column(Float, nullable=True)
     yat = Column(Float, nullable=True)

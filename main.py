@@ -1,11 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException
-import pandas as pd, joblib, redis, json, subprocess, os
+import pandas as pd, joblib, redis, json, subprocess, os, random
 from pulp import LpProblem, LpMinimize, LpVariable, lpSum, value
 from fastapi.responses import HTMLResponse
 # Veritabanı bileşenleri
 from sqlalchemy.orm import Session
 from database import engine, Base, SessionLocal, MeterData  # MeterData yerine projedeki model ismini (MeterReading gibi) kontrol et
-import crud 
+import crud
 from kpi_engine import calculate_vpp_performance
 
 # --- VERİTABANI BAĞLANTI YÖNETİCİSİ ---
@@ -128,7 +128,7 @@ def get_vpp_metrics(meter_id: str, db: Session = Depends(get_db)):
         "kpi_metrics": metrics
     }
 
-# --- 4. GEÇMİŞ VERİ VE DASHBOARD ---
+# --- 4. GEÇMİŞ VERİ VE DASHBOARD --- # --- REFRESH LOGIC ---
 @app.get("/history")
 def get_history(db: Session = Depends(get_db)):
     # CRUD metodu içindeki limit parametresini 24 olarak kullanıyoruz
@@ -137,6 +137,60 @@ def get_history(db: Session = Depends(get_db)):
     # Dashboard grafiği soldan sağa (eskiden yeniye) aksın diye 
     # listeyi ters çevirip (Pythonic slice ile) gönderiyoruz.
     return history[::-1]
+
+
+
+
+from fastapi import FastAPI, Query
+from datetime import datetime, timedelta
+# --- PLAN A/B DİNAMİK VERİ SERVİSİ ---
+@app.get("/api/vpp-data")
+def get_vpp_data(mode: str = Query("B", regex="^[AB]$"), db: Session = Depends(get_db)):
+    """
+    Frontend'deki stratejik/operasyonel geçişin ana veri kaynağı.
+    """
+    if mode == "A":
+        # PLAN A: Stratejik Yarın Tahminleri
+        yarin_verisi = []
+        
+        # 24 saatlik döngü (00:00'dan 23:00'e)
+        for i in range(24):
+            # ML modelini simüle eden dinamik yük (kWh)
+            # 100 base değer üzerine saate bağlı ve rastgele dalgalanma
+            base_load = 120 if (8 <= i <= 18) else 80 # Mesai saatleri yükü
+            load_fluctuation = random.uniform(0.8, 1.2)
+            predicted_val = round(base_load * load_fluctuation, 2)
+            
+            # Yarının beklenen PTF fiyatı (₺)
+            # Akşam saatlerinde (17-21) fiyatların arttığı bir senaryo
+            base_price = 2600 if (17 <= i <= 21) else 2400
+            price_fluctuation = random.uniform(0.95, 1.1)
+            ptf_val = round(base_price * price_fluctuation, 2)
+            
+            yarin_verisi.append({
+                "hour": f"{i:02d}:00",
+                "predicted_load": predicted_val, # Grafiğin arayacağı anahtar
+                "ptf": ptf_val,                # Fiyat çizgisi için
+                "action": "YÜK KAYDIR" if ptf_val > 2650 else "NORMAL"
+            })
+            
+        return {"mode": "A", "data": yarin_verisi}
+    
+    else:
+        # PLAN B: Bugünün Gerçekleşen Verileri (Mevcut kodunuzu koruyun)
+        history = crud.get_readings(db, limit=24)
+        operasyonel_veri = []
+        for h in history:
+            operasyonel_veri.append({
+                "hour": h.timestamp.strftime("%H:%M"),
+                "actual_load": h.consumption,
+                "ptf": h.price,
+                "smf": getattr(h, 'smf', h.price),
+                "yal": getattr(h, 'yal', 0),
+                "yat": getattr(h, 'yat', 0)
+            })
+        return {"mode": "B", "data": operasyonel_veri}
+    
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
